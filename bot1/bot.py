@@ -99,10 +99,10 @@ PAYMENT_METHODS = {
 }
 
 WELCOME_IMAGE_URL    = "https://your-image-host.com/welcome.jpg"
-PAYMENT_MAIN_IMAGE   = "https://your-image-host.com/payment_main.jpg"
+PAYMENT_MAIN_IMAGE   = "https://graph.org/file/bda4c8741cef3354d467f-2d3c7faabd36813f12.jpg"
 
 RATING = "4.9★"
-BASE_MEMBER_COUNT = 200   # Floor — displayed count never goes below this
+BASE_MEMBER_COUNT = 638   # Floor — displayed count never goes below this
 
 # ─── SUPABASE HELPERS ─────────────────────────────────────────────────────────
 def now_utc():
@@ -305,7 +305,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "This bot runs on passion and your generosity.\n"
             "Every donation — big or small — keeps the servers alive,\n"
             "the content fresh, and the community growing. 🙏\n\n"
-            "<i>No subscription needed. Just pay what feels right.</i>\n\n"
+            "<i>Just pay what feels right.</i>\n\n"
             "👇 Choose your donation method:"
         )
         await edit_or_reply(query, text, donate_keyboard())
