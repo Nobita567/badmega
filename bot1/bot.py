@@ -30,37 +30,71 @@ supabase: Client = create_client(SUPA_URL, SUPA_KEY)
 
 # ─── PLANS — dual INR/USD pricing ─────────────────────────────────────────────
 PLANS = {
-    "7days":    {"label": "⚡ 7-Day Access",    "price": "$9.99 / ₹849",   "days": 7},
-    "1month":   {"label": "🔥 1-Month Access",  "price": "$24.99 / ₹2,099", "days": 30},
-    "lifetime": {"label": "👑 Lifetime Access", "price": "$59.99 / ₹4,999", "days": None},
+    "7days":    {"label": "⚡ 7-Day Access",    "price": "$6 / ₹499",   "days": 7},
+    "1month":   {"label": "🔥 1-Month Access",  "price": "$8 / ₹699", "days": 30},
+    "lifetime": {"label": "👑 Lifetime Access", "price": "$10 / ₹899", "days": None},
 }
 
-# ─── PAYMENT METHODS — image URLs instead of local files ──────────────────────
+# ─── PAYMENT METHODS ──────────────────────────────────────────────────────────
 PAYMENT_METHODS = {
+    "qr": {
+        "label": "📷 QR Code",
+        "text": (
+            "🧾 <b>QR Code Payment</b>\n\n"
+            "Scan the QR code above to complete your payment.\n\n"
+            "📸 <b>Once paid:</b> send your payment screenshot right here.\n\n"
+            "⏳ <i>Window closes in 15 minutes.</i>"
+        ),
+        "image": "https://i.ibb.co/bMP4nQ7S/ee15c8361b23.jpg",
+        "extra_buttons": [],
+    },
+    "paytm": {
+        "label": "💸 Paytm / UPI",
+        "text": (
+            "💸 <b>Paytm / UPI Payment</b>\n\n"
+            "Send payment to the UPI ID below:\n\n"
+            "🔑 UPI ID: <code>womp@ptyes</code>\n\n"
+            "📸 <b>Once paid:</b> send your payment screenshot right here.\n\n"
+            "⏳ <i>Window closes in 15 minutes.</i>"
+        ),
+        "image": "https://i.ibb.co/Gf4dxt28/bdb68f4ab32e.jpg",
+        "extra_buttons": [],
+    },
     "paypal": {
-        "label":   "💳 PayPal",
-        "details": "Send payment to:\n📧 payments@yourdomain.com\n\n⚠️ Add your Telegram username in the note!",
-        "image":   "https://your-image-host.com/paypal.jpg",   # ← replace with your URL
+        "label": "🌐 PayPal",
+        "text": (
+            "🌐 <b>PayPal Payment</b>\n\n"
+            "Send payment to:\n\n"
+            "📧 <code>Ankitmallick5790@gmail.com</code>\n\n"
+            "📸 <b>Once paid:</b> send your payment screenshot right here.\n\n"
+            "⏳ <i>Window closes in 15 minutes.</i>"
+        ),
+        "image": "https://i.ibb.co/gLPBppVv/1d77334f059d.jpg",
+        "extra_buttons": [],
     },
     "crypto": {
-        "label":   "₿ Crypto",
-        "details": "Send to wallet:\n\n₿ BTC: bc1qxxx...yourbtcaddress\n\nETH: 0xYourEthAddress\n\nSOL: YourSolanaAddress",
-        "image":   "https://your-image-host.com/crypto.jpg",
+        "label": "🪙 Crypto (USDT)",
+        "text": (
+            "🪙 <b>Crypto Payment — USDT (BEP20)</b>\n\n"
+            "Send USDT to:\n\n"
+            "👛 <code>0x1da04f30bdc147612a625b203217f50cdb84e2f6</code>\n\n"
+            "⚠️ <i>Send on BEP20 network only!</i>\n\n"
+            "📸 <b>Once paid:</b> send your payment screenshot right here.\n\n"
+            "⏳ <i>Window closes in 15 minutes.</i>"
+        ),
+        "image": "https://graph.org/file/60cf45bb50cf108f47196-28db3241840c7bc2db.jpg",
+        "extra_buttons": [],
     },
-    "upi": {
-        "label":   "🇮🇳 UPI",
-        "details": "Pay via UPI:\n\n📱 UPI ID: yourname@upi\n\n⚠️ Use your Telegram username as reference!",
-        "image":   "https://your-image-host.com/upi.jpg",
-    },
-    "qr": {
-        "label":   "📷 QR Code",
-        "details": "Scan the QR below to pay:",
-        "image":   "https://your-image-host.com/qr.jpg",       # ← your actual QR image URL
-    },
-    "other": {
-        "label":   "🔗 Other",
-        "details": "Contact admin for other payment options:\n\n👤 @YourAdminUsername\n\nMention your plan when contacting.",
-        "image":   "https://your-image-host.com/other.jpg",
+    "others": {
+        "label": "💳 Other Methods",
+        "text": (
+            "💳 <b>Other Payment Methods</b>\n\n"
+            "Message the admin directly for other payment methods.\n\n"
+        ),
+        "image": "https://i.ibb.co/Sw8CMtvz/b856f157559b.jpg",
+        "extra_buttons": [
+            [InlineKeyboardButton(text="👤 Message Admin", url="https://t.me/ProSeller_69")]
+        ],
     },
 }
 
@@ -147,10 +181,10 @@ def payment_methods_keyboard(plan_key):
     buttons.append([InlineKeyboardButton("🔙 Back to Plans", callback_data="back_plans")])
     return InlineKeyboardMarkup(buttons)
 
-def method_detail_keyboard(plan_key):
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔙 Back to Payment Methods", callback_data=f"plan_{plan_key}")
-    ]])
+def method_detail_keyboard(plan_key, extra_buttons=None):
+    buttons = list(extra_buttons or [])
+    buttons.append([InlineKeyboardButton("🔙 Back to Payment Methods", callback_data=f"plan_{plan_key}")])
+    return InlineKeyboardMarkup(buttons)
 
 def admin_approval_keyboard(user_id, plan_key):
     return InlineKeyboardMarkup([[
@@ -344,22 +378,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending["method"] = method_key
         db_upsert_pending(user.id, pending)
 
+        # Use "text" field (new format) — prepend plan info
+        body = method.get("text", method.get("details", ""))
         text = (
-            f"💳 <b>{method['label']}</b>\n\n"
             f"📦 Plan: <b>{plan['label']}</b>\n"
             f"💰 Amount: <b>{plan['price']}</b>\n\n"
-            f"{method['details']}\n\n"
-            "📸 <b>After payment, send your screenshot here.</b>"
-        )
+        ) + body
+
+        extra_buttons = method.get("extra_buttons", [])
+        kb = method_detail_keyboard(plan_key, extra_buttons)
+
         try:
             await query.message.reply_photo(
                 photo=method["image"],
                 caption=text,
-                reply_markup=method_detail_keyboard(plan_key),
+                reply_markup=kb,
                 parse_mode="HTML"
             )
         except:
-            await query.message.reply_text(text, reply_markup=method_detail_keyboard(plan_key), parse_mode="HTML")
+            await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
     # ── Admin: Approve — ask for invite link
