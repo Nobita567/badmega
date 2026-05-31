@@ -100,9 +100,10 @@ PAYMENT_METHODS = {
 
 WELCOME_IMAGE_URL    = "https://your-image-host.com/welcome.jpg"
 PAYMENT_MAIN_IMAGE   = "https://graph.org/file/bda4c8741cef3354d467f-2d3c7faabd36813f12.jpg"
+DONATE_IMAGE         = "https://graph.org/file/d0108817594a1b51532a4-396122f7b54970bd86.jpg"   # ← replace with your donation image URL
 
 RATING = "4.9★"
-BASE_MEMBER_COUNT = 638   # Floor — displayed count never goes below this
+BASE_MEMBER_COUNT = 200   # Floor — displayed count never goes below this
 
 # ─── SUPABASE HELPERS ─────────────────────────────────────────────────────────
 def now_utc():
@@ -305,10 +306,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "This bot runs on passion and your generosity.\n"
             "Every donation — big or small — keeps the servers alive,\n"
             "the content fresh, and the community growing. 🙏\n\n"
-            "<i>Just pay what feels right.</i>\n\n"
+            "<iJust pay what feels right.</i>\n\n"
             "👇 Choose your donation method:"
         )
-        await edit_or_reply(query, text, donate_keyboard())
+        try:
+            await query.message.reply_photo(
+                photo=DONATE_IMAGE,
+                caption=text,
+                reply_markup=donate_keyboard(),
+                parse_mode="HTML"
+            )
+        except:
+            await query.message.reply_text(text, reply_markup=donate_keyboard(), parse_mode="HTML")
         return
 
     # ── Donate method
