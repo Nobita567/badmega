@@ -30,9 +30,9 @@ supabase: Client = create_client(SUPA_URL, SUPA_KEY)
 
 # ─── PLANS — dual INR/USD pricing ─────────────────────────────────────────────
 PLANS = {
-    "7days":    {"label": "⚡ 7-Day Access",    "price": "$6 / ₹499",   "days": 7},
-    "1month":   {"label": "🔥 1-Month Access",  "price": "$8 / ₹699", "days": 30},
-    "lifetime": {"label": "👑 Lifetime Access", "price": "$10 / ₹899", "days": None},
+    "7days":    {"label": "⚡ 7-Day Access",    "price": "$8 / ₹499",   "days": 7},
+    "1month":   {"label": "🔥 1-Month Access",  "price": "$10 / ₹699", "days": 30},
+    "lifetime": {"label": "👑 Lifetime Access", "price": "$12 / ₹899", "days": None},
 }
 
 # ─── PAYMENT METHODS ──────────────────────────────────────────────────────────
@@ -206,41 +206,24 @@ def renew_keyboard():
     ])
 
 def donate_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 PayPal",  callback_data="donate_paypal"),
-         InlineKeyboardButton("₿ Crypto",  callback_data="donate_crypto")],
-        [InlineKeyboardButton("🇮🇳 UPI",   callback_data="donate_upi"),
-         InlineKeyboardButton("📷 QR",     callback_data="donate_qr")],
-        [InlineKeyboardButton("🔙 Back",   callback_data="back_plans")],
-    ])
+    buttons = []
+    row = []
+    for key, method in PAYMENT_METHODS.items():
+        row.append(InlineKeyboardButton(method["label"], callback_data=f"donate_{key}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("🔙 Back to Plans", callback_data="back_plans")])
+    return InlineKeyboardMarkup(buttons)
 
 def donate_back_keyboard():
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("🔙 Back to Donate", callback_data="donate")
     ]])
 
-DONATE_METHODS = {
-    "paypal": {
-        "label":   "💳 PayPal Donation",
-        "details": "Send any amount to:\n📧 donations@yourdomain.com\n\n💬 Note: Telegram Donation",
-        "image":   "https://your-image-host.com/paypal.jpg",
-    },
-    "crypto": {
-        "label":   "₿ Crypto Donation",
-        "details": "Any amount appreciated:\n\n₿ BTC: bc1qxxx...yourbtcaddress\n\nETH: 0xYourEthAddress",
-        "image":   "https://your-image-host.com/crypto.jpg",
-    },
-    "upi": {
-        "label":   "🇮🇳 UPI Donation",
-        "details": "Scan or pay to:\n📱 UPI ID: yourname@upi\n\n💬 Any amount is welcome!",
-        "image":   "https://your-image-host.com/upi.jpg",
-    },
-    "qr": {
-        "label":   "📷 QR Code Donation",
-        "details": "Scan the QR below to donate any amount:",
-        "image":   "https://your-image-host.com/qr.jpg",
-    },
-}
+DONATE_METHODS = PAYMENT_METHODS
 
 # ─── WELCOME TEXT ─────────────────────────────────────────────────────────────
 def welcome_text(name: str, member_count: int) -> str:
@@ -296,11 +279,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
 
     member_count = db_total_users()
-    await reply_with_image(
-        update.message,
+    await update.message.reply_text(
         welcome_text(user.first_name, member_count),
-        plans_keyboard(),
-        WELCOME_IMAGE_URL,
+        reply_markup=plans_keyboard(),
+        parse_mode="HTML"
     )
 
 # ─── BUTTON HANDLER ───────────────────────────────────────────────────────────
@@ -335,21 +317,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method = DONATE_METHODS.get(method_key)
         if not method:
             return
+        body = method.get("text", method.get("details", ""))
         text = (
-            f"💝 <b>{method['label']}</b>\n\n"
-            f"{method['details']}\n\n"
-            "Thank you for keeping this community alive! 🌟\n"
+            f"💝 <b>{method['label']} — Donate</b>\n\n"
+        ) + body + (
+            "\n\nThank you for keeping this community alive! 🌟\n"
             "<i>After donating, no action needed — just enjoy!</i>"
         )
+        extra_buttons = method.get("extra_buttons", [])
+        kb_buttons = list(extra_buttons) + [[InlineKeyboardButton("\U0001f519 Back to Donate", callback_data="donate")]]
+        kb = InlineKeyboardMarkup(kb_buttons)
         try:
             await query.message.reply_photo(
                 photo=method["image"],
                 caption=text,
-                reply_markup=donate_back_keyboard(),
+                reply_markup=kb,
                 parse_mode="HTML"
             )
         except:
-            await query.message.reply_text(text, reply_markup=donate_back_keyboard(), parse_mode="HTML")
+            await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
     # ── Plan selected → payment methods
