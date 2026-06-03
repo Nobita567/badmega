@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 BOT_TOKEN   = os.getenv("BOT1_TOKEN")
 ADMIN_ID    = int(os.getenv("ADMIN_ID"))
-# Comma-separated list of channel/group IDs e.g. CHANNEL_IDS=-1001234567890,-1009876543210
 CHANNEL_IDS = [int(x.strip()) for x in os.getenv("CHANNEL_IDS", "").split(",") if x.strip()]
 PREVIEW_BOT = os.getenv("PREVIEW_BOT_USERNAME")
 SUPA_URL    = os.getenv("SUPABASE_URL")
@@ -161,10 +160,9 @@ def plans_keyboard():
         buttons.append([InlineKeyboardButton(
             f"{plan['label']} — {plan['price']}", callback_data=f"plan_{key}"
         )])
-    buttons.append([
-        InlineKeyboardButton("🔍 Preview Content", url=f"https://t.me/{PREVIEW_BOT.lstrip('@')}"),
-        InlineKeyboardButton("💝 Donate",           callback_data="donate"),
-    ])
+    # CHANGE 3: Preview Content and Donate on separate rows
+    buttons.append([InlineKeyboardButton("🔍 Preview Content", url=f"https://t.me/{PREVIEW_BOT.lstrip('@')}")])
+    buttons.append([InlineKeyboardButton("💝 Donate", callback_data="donate")])
     return InlineKeyboardMarkup(buttons)
 
 def payment_methods_keyboard(plan_key):
@@ -245,7 +243,24 @@ async def reply_with_image(message, caption: str, keyboard, image_url: str = Non
         except Exception as e2:
             logger.error(f"Fallback text also failed: {e2}")
 
-async def edit_or_reply(query, caption: str, keyboard, parse_mode="HTML"):
+# CHANGE 1: edit_or_reply now accepts an optional image_url and uses edit_message_media
+# so the photo stays correct after every back button press.
+async def edit_or_reply(query, caption: str, keyboard, image_url: str = None, parse_mode="HTML"):
+    """
+    If image_url is supplied and the current message has a photo, swap the media so
+    the correct image is always shown — even after Back button presses.
+    Falls back gracefully to caption-only or text edits.
+    """
+    if image_url:
+        try:
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=image_url, caption=caption, parse_mode=parse_mode),
+                reply_markup=keyboard,
+            )
+            return
+        except Exception as e:
+            logger.warning(f"edit_message_media failed, falling back: {e}")
+
     try:
         await query.edit_message_caption(caption=caption, reply_markup=keyboard, parse_mode=parse_mode)
     except:
@@ -280,19 +295,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user = query.from_user
 
-    # ── Back to plans
+    # ── Back to plans — keep PAYMENT_MAIN_IMAGE
     if data == "back_plans":
         member_count = db_total_users()
-        await edit_or_reply(query, welcome_text(user.first_name, member_count), plans_keyboard())
+        await edit_or_reply(
+            query,
+            welcome_text(user.first_name, member_count),
+            plans_keyboard(),
+            image_url=PAYMENT_MAIN_IMAGE,   # CHANGE 1: restore correct image
+        )
         return
 
-    # ── Donate hub
+    # ── Donate hub — keep DONATE_IMAGE
     if data == "donate":
         text = (
             "💝 <b>Support This Bot</b>\n\n"
             "This bot runs on passion and your generosity.\n"
             "Every donation — big or small — keeps the servers alive,\n"
             "the content fresh, and the community growing. 🙏\n\n"
+            "<i>Just pay what feels right.</i>\n\n"
             "👇 Choose your donation method:"
         )
         try:
@@ -306,7 +327,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text, reply_markup=donate_keyboard(), parse_mode="HTML")
         return
 
-    # ── Donate method
+    # ── Donate method — keep that method's image
     if data.startswith("donate_"):
         method_key = data[7:]
         method = DONATE_METHODS.get(method_key)
@@ -329,7 +350,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
-    # ── Plan selected → payment methods
+    # ── Plan selected → payment methods — keep PAYMENT_MAIN_IMAGE
     if data.startswith("plan_"):
         plan_key = data[5:]
         plan = PLANS[plan_key]
@@ -343,10 +364,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Price: <b>{plan['price']}</b>\n\n"
             "💳 <b>Choose your payment method:</b>"
         )
-        await edit_or_reply(query, text, payment_methods_keyboard(plan_key))
+        await edit_or_reply(
+            query, text, payment_methods_keyboard(plan_key),
+            image_url=PAYMENT_MAIN_IMAGE,   # CHANGE 1: keep the main payment image
+        )
         return
 
-    # ── Payment method selected
+    # ── Payment method selected — switch to that method's image
     if data.startswith("pay_"):
         _, method_key, plan_key = data.split("_", 2)
         method  = PAYMENT_METHODS[method_key]
@@ -362,10 +386,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ) + body
 
         kb = method_detail_keyboard(plan_key, method.get("extra_buttons", []))
+        # CHANGE 1: edit media in-place to swap to this method's image
         try:
-            await query.message.reply_photo(photo=method["image"], caption=text, reply_markup=kb, parse_mode="HTML")
-        except:
-            await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=method["image"], caption=text, parse_mode="HTML"),
+                reply_markup=kb,
+            )
+        except Exception as e:
+            logger.warning(f"edit_message_media failed for pay_: {e}")
+            try:
+                await query.message.reply_photo(photo=method["image"], caption=text, reply_markup=kb, parse_mode="HTML")
+            except:
+                await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
     # ── Admin: Approve — ask for invite link
@@ -545,10 +577,10 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Could not notify user: {e}")
         return
 
-    # ── Waiting for dbroadcast caption
-    if admin_state.get("dbroadcast_waiting_caption"):
-        admin_state.pop("dbroadcast_waiting_caption")
-        admin_state["dbroadcast_caption"] = text
+    # CHANGE 2: dbroadcast — waiting for button text (no caption)
+    if admin_state.get("dbroadcast_waiting_btn_text"):
+        admin_state.pop("dbroadcast_waiting_btn_text")
+        admin_state["dbroadcast_btn_text"] = text.strip()
         await update.message.reply_text("📹 <b>Now send me the video for the broadcast.</b>", parse_mode="HTML")
         return
 
@@ -556,18 +588,21 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    if "dbroadcast_caption" not in admin_state:
+    if "dbroadcast_btn_text" not in admin_state:   # CHANGE 2
         return
 
-    caption = admin_state.pop("dbroadcast_caption")
-    video   = update.message.video or update.message.document
+    btn_text = admin_state.pop("dbroadcast_btn_text")   # CHANGE 2: use button text, no caption
+    video    = update.message.video or update.message.document
     if not video:
         await update.message.reply_text("⚠️ Please send a video file.")
         return
 
-    file_id = video.file_id
+    file_id      = video.file_id
+    main_bot_username = os.getenv('MAIN_BOT_USERNAME', '').lstrip('@')
+
+    # CHANGE 2: button uses t.me/<bot>?start=start so it opens/starts the bot
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🚀 View Plans", url=f"https://t.me/{os.getenv('MAIN_BOT_USERNAME')}")
+        InlineKeyboardButton(btn_text, url=f"https://t.me/{main_bot_username}?start=start")
     ]])
 
     user_ids  = db_all_user_ids()
@@ -578,8 +613,9 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for uid in user_ids:
         try:
             msg = await context.bot.send_video(
-                chat_id=uid, video=file_id, caption=caption,
+                chat_id=uid, video=file_id,
                 reply_markup=kb, parse_mode="HTML"
+                # CHANGE 2: no caption kwarg — video sent without caption
             )
             sent_msgs.append((uid, msg.message_id))
             sent += 1
@@ -642,9 +678,11 @@ async def dbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Not authorized.")
         return
-    admin_state["dbroadcast_waiting_caption"] = True
+    # CHANGE 2: ask for button text only, not a caption
+    admin_state["dbroadcast_waiting_btn_text"] = True
     await update.message.reply_text(
-        "📝 <b>Step 1 of 2 — Send the caption text for the broadcast video:</b>",
+        "🔘 <b>Send the button text for the broadcast video:</b>\n\n"
+        "<i>e.g.</i> <code>🚀 View Plans</code>",
         parse_mode="HTML"
     )
 
