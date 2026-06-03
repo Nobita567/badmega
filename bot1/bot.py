@@ -28,7 +28,7 @@ SUPA_KEY    = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPA_URL, SUPA_KEY)
 
-# ─── PLANS — dual INR/USD pricing ─────────────────────────────────────────────
+# ─── PLANS ────────────────────────────────────────────────────────────────────
 PLANS = {
     "7days":    {"label": "⚡ 7-Day Access",    "price": "$8 / ₹499",  "days": 7},
     "1month":   {"label": "🔥 1-Month Access",  "price": "$10 / ₹699", "days": 30},
@@ -160,7 +160,6 @@ def plans_keyboard():
         buttons.append([InlineKeyboardButton(
             f"{plan['label']} — {plan['price']}", callback_data=f"plan_{key}"
         )])
-    # CHANGE 3: Preview Content and Donate on separate rows
     buttons.append([InlineKeyboardButton("🔍 Preview Content", url=f"https://t.me/{PREVIEW_BOT.lstrip('@')}")])
     buttons.append([InlineKeyboardButton("💝 Donate", callback_data="donate")])
     return InlineKeyboardMarkup(buttons)
@@ -229,46 +228,6 @@ def welcome_text(name: str, member_count: int) -> str:
         "<i>Prices shown in USD & INR</i>"
     )
 
-# ─── SEND HELPERS ─────────────────────────────────────────────────────────────
-async def reply_with_image(message, caption: str, keyboard, image_url: str = None, parse_mode="HTML"):
-    try:
-        if image_url:
-            await message.reply_photo(photo=image_url, caption=caption, reply_markup=keyboard, parse_mode=parse_mode)
-        else:
-            await message.reply_text(caption, reply_markup=keyboard, parse_mode=parse_mode)
-    except Exception as e:
-        logger.error(f"reply_with_image error: {e}")
-        try:
-            await message.reply_text(caption, reply_markup=keyboard, parse_mode=parse_mode)
-        except Exception as e2:
-            logger.error(f"Fallback text also failed: {e2}")
-
-# CHANGE 1: edit_or_reply now accepts an optional image_url and uses edit_message_media
-# so the photo stays correct after every back button press.
-async def edit_or_reply(query, caption: str, keyboard, image_url: str = None, parse_mode="HTML"):
-    """
-    If image_url is supplied and the current message has a photo, swap the media so
-    the correct image is always shown — even after Back button presses.
-    Falls back gracefully to caption-only or text edits.
-    """
-    if image_url:
-        try:
-            await query.edit_message_media(
-                media=InputMediaPhoto(media=image_url, caption=caption, parse_mode=parse_mode),
-                reply_markup=keyboard,
-            )
-            return
-        except Exception as e:
-            logger.warning(f"edit_message_media failed, falling back: {e}")
-
-    try:
-        await query.edit_message_caption(caption=caption, reply_markup=keyboard, parse_mode=parse_mode)
-    except:
-        try:
-            await query.edit_message_text(caption, reply_markup=keyboard, parse_mode=parse_mode)
-        except:
-            await query.message.reply_text(caption, reply_markup=keyboard, parse_mode=parse_mode)
-
 # ─── /start ───────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -295,18 +254,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user = query.from_user
 
-    # ── Back to plans — keep PAYMENT_MAIN_IMAGE
+    # ── Back to plans: delete the plan/payment msg, original plans msg stays
     if data == "back_plans":
-        member_count = db_total_users()
-        await edit_or_reply(
-            query,
-            welcome_text(user.first_name, member_count),
-            plans_keyboard(),
-            image_url=PAYMENT_MAIN_IMAGE,   # CHANGE 1: restore correct image
-        )
+        try:
+            await query.message.delete()
+        except Exception as e:
+            logger.warning(f"Could not delete message on back_plans: {e}")
         return
 
-    # ── Donate hub — keep DONATE_IMAGE
+    # ── Donate hub
     if data == "donate":
         text = (
             "💝 <b>Support This Bot</b>\n\n"
@@ -327,7 +283,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text, reply_markup=donate_keyboard(), parse_mode="HTML")
         return
 
-    # ── Donate method — keep that method's image
+    # ── Donate method
     if data.startswith("donate_"):
         method_key = data[7:]
         method = DONATE_METHODS.get(method_key)
@@ -350,7 +306,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
-    # ── Plan selected → payment methods — keep PAYMENT_MAIN_IMAGE
+    # ── Plan selected → send NEW message with payment methods
     if data.startswith("plan_"):
         plan_key = data[5:]
         plan = PLANS[plan_key]
@@ -364,13 +320,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Price: <b>{plan['price']}</b>\n\n"
             "💳 <b>Choose your payment method:</b>"
         )
-        await edit_or_reply(
-            query, text, payment_methods_keyboard(plan_key),
-            image_url=PAYMENT_MAIN_IMAGE,   # CHANGE 1: keep the main payment image
-        )
+        # Send a brand-new message — do NOT edit the plans message
+        try:
+            await query.message.reply_photo(
+                photo=PAYMENT_MAIN_IMAGE,
+                caption=text,
+                reply_markup=payment_methods_keyboard(plan_key),
+                parse_mode="HTML"
+            )
+        except:
+            await query.message.reply_text(text, reply_markup=payment_methods_keyboard(plan_key), parse_mode="HTML")
         return
 
-    # ── Payment method selected — switch to that method's image
+    # ── Payment method selected — edit the current (plan) message in place
     if data.startswith("pay_"):
         _, method_key, plan_key = data.split("_", 2)
         method  = PAYMENT_METHODS[method_key]
@@ -386,7 +348,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ) + body
 
         kb = method_detail_keyboard(plan_key, method.get("extra_buttons", []))
-        # CHANGE 1: edit media in-place to swap to this method's image
+        # Edit in place — swap image and caption
         try:
             await query.edit_message_media(
                 media=InputMediaPhoto(media=method["image"], caption=text, parse_mode="HTML"),
@@ -400,7 +362,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
-    # ── Admin: Approve — ask for invite link
+    # ── Admin: Approve
     if data.startswith("approve_"):
         if user.id != ADMIN_ID:
             await query.answer("❌ Not authorized.", show_alert=True)
@@ -531,7 +493,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Approval notify error: {e}")
 
-        # Upsell (non-lifetime only)
         if plan_key != "lifetime":
             async def send_upsell():
                 await asyncio.sleep(4)
@@ -577,7 +538,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Could not notify user: {e}")
         return
 
-    # CHANGE 2: dbroadcast — waiting for button text (no caption)
+    # ── dbroadcast: waiting for button text
     if admin_state.get("dbroadcast_waiting_btn_text"):
         admin_state.pop("dbroadcast_waiting_btn_text")
         admin_state["dbroadcast_btn_text"] = text.strip()
@@ -588,19 +549,18 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    if "dbroadcast_btn_text" not in admin_state:   # CHANGE 2
+    if "dbroadcast_btn_text" not in admin_state:
         return
 
-    btn_text = admin_state.pop("dbroadcast_btn_text")   # CHANGE 2: use button text, no caption
+    btn_text = admin_state.pop("dbroadcast_btn_text")
     video    = update.message.video or update.message.document
     if not video:
         await update.message.reply_text("⚠️ Please send a video file.")
         return
 
-    file_id      = video.file_id
+    file_id           = video.file_id
     main_bot_username = os.getenv('MAIN_BOT_USERNAME', '').lstrip('@')
 
-    # CHANGE 2: button uses t.me/<bot>?start=start so it opens/starts the bot
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton(btn_text, url=f"https://t.me/{main_bot_username}?start=start")
     ]])
@@ -615,7 +575,6 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
             msg = await context.bot.send_video(
                 chat_id=uid, video=file_id,
                 reply_markup=kb, parse_mode="HTML"
-                # CHANGE 2: no caption kwarg — video sent without caption
             )
             sent_msgs.append((uid, msg.message_id))
             sent += 1
@@ -678,7 +637,6 @@ async def dbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Not authorized.")
         return
-    # CHANGE 2: ask for button text only, not a caption
     admin_state["dbroadcast_waiting_btn_text"] = True
     await update.message.reply_text(
         "🔘 <b>Send the button text for the broadcast video:</b>\n\n"
@@ -695,7 +653,7 @@ async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
         uid        = row["user_id"]
         expires_at = row.get("expires_at")
         if not expires_at:
-            continue  # lifetime
+            continue
 
         try:
             exp = datetime.fromisoformat(expires_at)
@@ -704,7 +662,6 @@ async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
         except:
             continue
 
-        # ── Kick expired user from all channels
         if now >= exp:
             try:
                 for ch_id in CHANNEL_IDS:
@@ -731,7 +688,6 @@ async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Expiry handler error for {uid}: {e}")
             continue
 
-        # ── Renewal reminder 23-25h before expiry
         time_left = exp - now
         if timedelta(hours=23) <= time_left <= timedelta(hours=25):
             try:
