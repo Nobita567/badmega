@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 BOT_TOKEN   = os.getenv("BOT1_TOKEN")
 ADMIN_ID    = int(os.getenv("ADMIN_ID"))
-GROUP_ID    = int(os.getenv("GROUP_ID"))
+# Comma-separated list of channel/group IDs e.g. CHANNEL_IDS=-1001234567890,-1009876543210
+CHANNEL_IDS = [int(x.strip()) for x in os.getenv("CHANNEL_IDS", "").split(",") if x.strip()]
 PREVIEW_BOT = os.getenv("PREVIEW_BOT_USERNAME")
 SUPA_URL    = os.getenv("SUPABASE_URL")
 SUPA_KEY    = os.getenv("SUPABASE_KEY")
@@ -30,7 +31,7 @@ supabase: Client = create_client(SUPA_URL, SUPA_KEY)
 
 # ─── PLANS — dual INR/USD pricing ─────────────────────────────────────────────
 PLANS = {
-    "7days":    {"label": "⚡ 7-Day Access",    "price": "$8 / ₹499",   "days": 7},
+    "7days":    {"label": "⚡ 7-Day Access",    "price": "$8 / ₹499",  "days": 7},
     "1month":   {"label": "🔥 1-Month Access",  "price": "$10 / ₹699", "days": 30},
     "lifetime": {"label": "👑 Lifetime Access", "price": "$12 / ₹899", "days": None},
 }
@@ -98,12 +99,12 @@ PAYMENT_METHODS = {
     },
 }
 
-WELCOME_IMAGE_URL    = "https://your-image-host.com/welcome.jpg"
-PAYMENT_MAIN_IMAGE   = "https://graph.org/file/bda4c8741cef3354d467f-2d3c7faabd36813f12.jpg"
-DONATE_IMAGE         = "https://graph.org/file/d0108817594a1b51532a4-396122f7b54970bd86.jpg"   # ← replace with your donation image URL
+PAYMENT_MAIN_IMAGE = "https://graph.org/file/bda4c8741cef3354d467f-2d3c7faabd36813f12.jpg"
+DONATE_IMAGE       = "https://graph.org/file/d0108817594a1b51532a4-396122f7b54970bd86.jpg"
+DONATE_METHODS     = PAYMENT_METHODS
 
-RATING = "4.9★"
-BASE_MEMBER_COUNT = 200   # Floor — displayed count never goes below this
+RATING            = "4.9★"
+BASE_MEMBER_COUNT = 200
 
 # ─── SUPABASE HELPERS ─────────────────────────────────────────────────────────
 def now_utc():
@@ -140,7 +141,6 @@ def db_all_user_ids():
     return [row["user_id"] for row in (r.data or [])]
 
 def db_total_users() -> int:
-    """Real user count from DB, floored at BASE_MEMBER_COUNT."""
     r = supabase.table("subscribers").select("user_id", count="exact").execute()
     count = r.count or 0
     return max(count, BASE_MEMBER_COUNT)
@@ -151,10 +151,8 @@ def get_expiry(plan_key):
         return None
     return now_utc() + timedelta(days=days)
 
-# ─── ADMIN STATE — simple in-memory flags ─────────────────────────────────────
-# Keyed by admin user_id (only one admin so this is fine)
+# ─── ADMIN STATE ──────────────────────────────────────────────────────────────
 admin_state: dict = {}
-# States: "rejecting"->uid, "approving"->uid, "plan_key"->key, "dbroadcast_waiting_video", "dbroadcast_caption"->text
 
 # ─── KEYBOARDS ────────────────────────────────────────────────────────────────
 def plans_keyboard():
@@ -172,7 +170,7 @@ def plans_keyboard():
 def payment_methods_keyboard(plan_key):
     buttons = []
     row = []
-    for i, (key, method) in enumerate(PAYMENT_METHODS.items()):
+    for key, method in PAYMENT_METHODS.items():
         row.append(InlineKeyboardButton(method["label"], callback_data=f"pay_{key}_{plan_key}"))
         if len(row) == 2:
             buttons.append(row)
@@ -202,8 +200,8 @@ def upsell_keyboard():
 def renew_keyboard():
     p = PLANS["lifetime"]["price"]
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Renew Now",               callback_data="back_plans")],
-        [InlineKeyboardButton(f"👑 Go Lifetime — {p}",      callback_data="plan_lifetime")],
+        [InlineKeyboardButton("🔄 Renew Now",          callback_data="back_plans")],
+        [InlineKeyboardButton(f"👑 Go Lifetime — {p}", callback_data="plan_lifetime")],
     ])
 
 def donate_keyboard():
@@ -218,13 +216,6 @@ def donate_keyboard():
         buttons.append(row)
     buttons.append([InlineKeyboardButton("🔙 Back to Plans", callback_data="back_plans")])
     return InlineKeyboardMarkup(buttons)
-
-def donate_back_keyboard():
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔙 Back to Donate", callback_data="donate")
-    ]])
-
-DONATE_METHODS = PAYMENT_METHODS
 
 # ─── WELCOME TEXT ─────────────────────────────────────────────────────────────
 def welcome_text(name: str, member_count: int) -> str:
@@ -242,7 +233,6 @@ def welcome_text(name: str, member_count: int) -> str:
 
 # ─── SEND HELPERS ─────────────────────────────────────────────────────────────
 async def reply_with_image(message, caption: str, keyboard, image_url: str = None, parse_mode="HTML"):
-    """Send photo from URL or fallback to text."""
     try:
         if image_url:
             await message.reply_photo(photo=image_url, caption=caption, reply_markup=keyboard, parse_mode=parse_mode)
@@ -256,7 +246,6 @@ async def reply_with_image(message, caption: str, keyboard, image_url: str = Non
             logger.error(f"Fallback text also failed: {e2}")
 
 async def edit_or_reply(query, caption: str, keyboard, parse_mode="HTML"):
-    """Try to edit existing message, fallback to new reply."""
     try:
         await query.edit_message_caption(caption=caption, reply_markup=keyboard, parse_mode=parse_mode)
     except:
@@ -268,8 +257,7 @@ async def edit_or_reply(query, caption: str, keyboard, parse_mode="HTML"):
 # ─── /start ───────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    existing = db_get_user(user.id)
-    if not existing:
+    if not db_get_user(user.id):
         db_upsert_user(user.id, {
             "username":   user.username or "",
             "first_name": user.first_name or "",
@@ -278,7 +266,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "expires_at": None,
             "joined_at":  now_utc().isoformat(),
         })
-
     member_count = db_total_users()
     await update.message.reply_text(
         welcome_text(user.first_name, member_count),
@@ -306,7 +293,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "This bot runs on passion and your generosity.\n"
             "Every donation — big or small — keeps the servers alive,\n"
             "the content fresh, and the community growing. 🙏\n\n"
-            "<iJust pay what feels right.</i>\n\n"
             "👇 Choose your donation method:"
         )
         try:
@@ -329,20 +315,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = method.get("text", method.get("details", ""))
         text = (
             f"💝 <b>{method['label']} — Donate</b>\n\n"
-        ) + body + (
+            + body +
             "\n\nThank you for keeping this community alive! 🌟\n"
             "<i>After donating, no action needed — just enjoy!</i>"
         )
         extra_buttons = method.get("extra_buttons", [])
-        kb_buttons = list(extra_buttons) + [[InlineKeyboardButton("\U0001f519 Back to Donate", callback_data="donate")]]
-        kb = InlineKeyboardMarkup(kb_buttons)
+        kb = InlineKeyboardMarkup(
+            list(extra_buttons) + [[InlineKeyboardButton("🔙 Back to Donate", callback_data="donate")]]
+        )
         try:
-            await query.message.reply_photo(
-                photo=method["image"],
-                caption=text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
+            await query.message.reply_photo(photo=method["image"], caption=text, reply_markup=kb, parse_mode="HTML")
         except:
             await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
@@ -367,29 +349,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Payment method selected
     if data.startswith("pay_"):
         _, method_key, plan_key = data.split("_", 2)
-        method = PAYMENT_METHODS[method_key]
-        plan   = PLANS[plan_key]
+        method  = PAYMENT_METHODS[method_key]
+        plan    = PLANS[plan_key]
         pending = db_get_pending(user.id) or {}
         pending["method"] = method_key
         db_upsert_pending(user.id, pending)
 
-        # Use "text" field (new format) — prepend plan info
         body = method.get("text", method.get("details", ""))
         text = (
             f"📦 Plan: <b>{plan['label']}</b>\n"
             f"💰 Amount: <b>{plan['price']}</b>\n\n"
         ) + body
 
-        extra_buttons = method.get("extra_buttons", [])
-        kb = method_detail_keyboard(plan_key, extra_buttons)
-
+        kb = method_detail_keyboard(plan_key, method.get("extra_buttons", []))
         try:
-            await query.message.reply_photo(
-                photo=method["image"],
-                caption=text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
+            await query.message.reply_photo(photo=method["image"], caption=text, reply_markup=kb, parse_mode="HTML")
         except:
             await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
@@ -401,13 +375,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         _, uid, plan_key = data.split("_", 2)
         uid = int(uid)
-        # Store state: waiting for link
-        admin_state["approving"]  = uid
-        admin_state["plan_key"]   = plan_key
+        admin_state["approving"] = uid
+        admin_state["plan_key"]  = plan_key
         await query.message.reply_text(
             f"🔗 <b>Send the invite link for user <code>{uid}</code></b>\n\n"
             f"Plan: <b>{PLANS[plan_key]['label']}</b>\n\n"
-            "Paste the unique group invite link now:",
+            "Paste the unique channel invite link now:",
             parse_mode="HTML"
         )
         try:
@@ -488,14 +461,14 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text or ""
 
-    # ── Waiting for invite link (approval flow)
+    # ── Waiting for invite link
     if "approving" in admin_state:
-        uid      = admin_state.pop("approving")
-        plan_key = admin_state.pop("plan_key", None)
+        uid        = admin_state.pop("approving")
+        plan_key   = admin_state.pop("plan_key", None)
         invite_url = text.strip()
 
         if not invite_url.startswith("http"):
-            await update.message.reply_text("⚠️ That doesn't look like a valid link. Please try /start on the screenshot again.")
+            await update.message.reply_text("⚠️ That doesn't look like a valid link. Try again.")
             return
 
         expiry = get_expiry(plan_key)
@@ -514,7 +487,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=uid,
                 text=(
                     f"✅ <b>Payment Approved!</b>\n\n"
-                    f"🎉 Welcome to the premium group!\n\n"
+                    f"🎉 Welcome to the premium channel!\n\n"
                     f"📦 Plan: <b>{plan['label']}</b>\n"
                     f"💰 Amount: <b>{plan['price']}</b>\n"
                     f"📅 Expires: <b>{expiry_txt}</b>\n\n"
@@ -530,7 +503,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if plan_key != "lifetime":
             async def send_upsell():
                 await asyncio.sleep(4)
-                savings = "Save ₹1,200+ vs renewing monthly!" if plan_key == "7days" else "Pay once, keep access forever!"
+                savings = "Save ₹400+ vs renewing monthly!" if plan_key == "7days" else "Pay once, keep access forever!"
                 try:
                     await context.bot.send_message(
                         chat_id=uid,
@@ -549,8 +522,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.create_task(send_upsell())
 
         await update.message.reply_text(
-            f"✅ Approved user <code>{uid}</code> — {plan['label']}\n"
-            f"Invite link sent to them.",
+            f"✅ Approved user <code>{uid}</code> — {plan['label']}\nInvite link sent.",
             parse_mode="HTML"
         )
         return
@@ -568,30 +540,27 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ),
                 parse_mode="HTML"
             )
-            await update.message.reply_text(f"✅ Rejection reason sent to <code>{uid}</code>.", parse_mode="HTML")
+            await update.message.reply_text(f"✅ Rejection sent to <code>{uid}</code>.", parse_mode="HTML")
         except Exception as e:
             await update.message.reply_text(f"❌ Could not notify user: {e}")
         return
 
-    # ── Waiting for dbroadcast video caption (second step)
+    # ── Waiting for dbroadcast caption
     if admin_state.get("dbroadcast_waiting_caption"):
         admin_state.pop("dbroadcast_waiting_caption")
         admin_state["dbroadcast_caption"] = text
-        await update.message.reply_text(
-            "📹 <b>Now send me the video for the broadcast.</b>",
-            parse_mode="HTML"
-        )
+        await update.message.reply_text("📹 <b>Now send me the video for the broadcast.</b>", parse_mode="HTML")
         return
 
-# ─── ADMIN VIDEO HANDLER (for /dbroadcast) ────────────────────────────────────
+# ─── ADMIN VIDEO HANDLER ──────────────────────────────────────────────────────
 async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     if "dbroadcast_caption" not in admin_state:
-        return  # not in dbroadcast flow
+        return
 
-    caption    = admin_state.pop("dbroadcast_caption")
-    video      = update.message.video or update.message.document
+    caption = admin_state.pop("dbroadcast_caption")
+    video   = update.message.video or update.message.document
     if not video:
         await update.message.reply_text("⚠️ Please send a video file.")
         return
@@ -604,7 +573,6 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_ids  = db_all_user_ids()
     sent_msgs = []
     sent = failed = blocked = 0
-
     status_msg = await update.message.reply_text(f"📤 Sending to {len(user_ids)} users...")
 
     for uid in user_ids:
@@ -636,7 +604,6 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
             except:
                 pass
-
     asyncio.create_task(delete_all())
 
 # ─── /broadcast ───────────────────────────────────────────────────────────────
@@ -648,8 +615,8 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /broadcast Your message here")
         return
 
-    text     = " ".join(context.args)
-    user_ids = db_all_user_ids()
+    text       = " ".join(context.args)
+    user_ids   = db_all_user_ids()
     sent = failed = blocked = 0
     status_msg = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users...")
 
@@ -670,7 +637,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📢 Broadcast done!\n✅ Sent: {sent}\n🚫 Blocked/removed from DB: {blocked}\n❌ Failed: {failed}"
     )
 
-# ─── /dbroadcast — step 1: ask for caption ────────────────────────────────────
+# ─── /dbroadcast ──────────────────────────────────────────────────────────────
 async def dbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Not authorized.")
@@ -699,28 +666,34 @@ async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
         except:
             continue
 
-        # Kick expired
+        # ── Kick expired user from all channels
         if now >= exp:
             try:
-                await context.bot.ban_chat_member(chat_id=GROUP_ID, user_id=uid)
-                await context.bot.unban_chat_member(chat_id=GROUP_ID, user_id=uid)
+                for ch_id in CHANNEL_IDS:
+                    try:
+                        await context.bot.ban_chat_member(chat_id=ch_id, user_id=uid)
+                        await context.bot.unban_chat_member(chat_id=ch_id, user_id=uid)
+                        logger.info(f"Kicked {uid} from {ch_id}")
+                    except TelegramError as kick_err:
+                        logger.error(f"Could not kick {uid} from {ch_id}: {kick_err}")
+
                 await context.bot.send_message(
                     chat_id=uid,
                     text=(
                         "⚠️ <b>Your subscription has expired.</b>\n\n"
-                        "You've been removed from the group.\n\n"
+                        "You've been removed from the channel(s).\n\n"
                         "🔄 Tap below to renew and get back in:"
                     ),
                     reply_markup=renew_keyboard(),
                     parse_mode="HTML"
                 )
                 db_upsert_user(uid, {"active": False, "plan": None, "expires_at": None})
-                logger.info(f"Kicked expired user {uid}")
+                logger.info(f"Processed expired user {uid}")
             except TelegramError as e:
-                logger.error(f"Could not kick {uid}: {e}")
+                logger.error(f"Expiry handler error for {uid}: {e}")
             continue
 
-        # Renewal reminder — 23-25h window before expiry
+        # ── Renewal reminder 23-25h before expiry
         time_left = exp - now
         if timedelta(hours=23) <= time_left <= timedelta(hours=25):
             try:
@@ -751,17 +724,14 @@ def main():
     app.add_handler(CommandHandler("dbroadcast", dbroadcast))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # Screenshots from normal users
     app.add_handler(MessageHandler(
         filters.PHOTO | filters.Document.IMAGE & ~filters.User(ADMIN_ID),
         handle_screenshot
     ))
-    # Admin video (for dbroadcast)
     app.add_handler(MessageHandler(
         filters.User(ADMIN_ID) & (filters.VIDEO | filters.Document.VIDEO),
         handle_admin_video
     ))
-    # Admin text (approval link / rejection reason / dbroadcast caption)
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID),
         handle_admin_text
