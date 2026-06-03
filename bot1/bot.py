@@ -218,14 +218,16 @@ def donate_keyboard():
 def welcome_text(name: str, member_count: int) -> str:
     deadline = (now_utc() + timedelta(hours=24)).strftime("%d %b, %H:%M UTC")
     return (
+        f"🌟 Your Exclusive Content Awaits! 🌟\n\n"
         f"👋 Welcome, <b>{name}</b>!\n\n"
         f"🔥 Join <b>{member_count:,}+ members</b> already inside — rated <b>{RATING}</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Welcome to @BadMegaVlP_bot! Since you're already here, we'll get straight to the good part. 😏\n\n"Inside our VIP collection you'll find:\n\n"✅ Exclusive premium content\n✅ Dedicated categories with easy navigation\n✅ GBs of content across all niches\n✅ Thousands of collections already available\n\nPress 👉🏻 Preview for a sneak peek 👀\n\n"
         "🚨 <b>LIMITED TIME OFFER</b>\n"
         f"⏰ Price increases after: <b>{deadline}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📦 <b>Choose a plan to get started:</b>\n"
-        "<i>Prices shown in USD & INR</i>"
+        "🔓 Access what you deserve.\nSee you inside! 👍\n"
+        "<i>BADMEGA VIP</i>"
     )
 
 # ─── /start ───────────────────────────────────────────────────────────────────
