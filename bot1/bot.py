@@ -179,7 +179,7 @@ def payment_methods_keyboard(plan_key):
 
 def method_detail_keyboard(plan_key, extra_buttons=None):
     buttons = list(extra_buttons or [])
-    buttons.append([InlineKeyboardButton("🔙 Back to Payment Methods", callback_data=f"plan_{plan_key}")])
+    buttons.append([InlineKeyboardButton("🔙 Back to Payment Methods", callback_data=f"backpay_{plan_key}")])
     return InlineKeyboardMarkup(buttons)
 
 def admin_approval_keyboard(user_id, plan_key):
@@ -330,6 +330,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except:
             await query.message.reply_text(text, reply_markup=payment_methods_keyboard(plan_key), parse_mode="HTML")
+        return
+
+    # ── Back to payment methods — edit image + keyboard in place
+    if data.startswith("backpay_"):
+        plan_key = data[8:]
+        plan = PLANS[plan_key]
+        text = (
+            f"🎯 You selected: <b>{plan['label']}</b>\n"
+            f"💰 Price: <b>{plan['price']}</b>\n\n"
+            "💳 <b>Choose your payment method:</b>"
+        )
+        try:
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=PAYMENT_MAIN_IMAGE, caption=text, parse_mode="HTML"),
+                reply_markup=payment_methods_keyboard(plan_key),
+            )
+        except Exception as e:
+            logger.warning(f"edit_message_media failed for backpay_: {e}")
+            try:
+                await query.message.reply_photo(
+                    photo=PAYMENT_MAIN_IMAGE, caption=text,
+                    reply_markup=payment_methods_keyboard(plan_key), parse_mode="HTML"
+                )
+            except:
+                await query.message.reply_text(text, reply_markup=payment_methods_keyboard(plan_key), parse_mode="HTML")
         return
 
     # ── Payment method selected — edit the current (plan) message in place
