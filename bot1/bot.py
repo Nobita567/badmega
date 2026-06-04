@@ -28,6 +28,9 @@ SUPA_KEY    = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPA_URL, SUPA_KEY)
 
+# ─── FIXED INVITE LINK ────────────────────────────────────────────────────────
+INVITE_LINK = "https://t.me/addlist/6sPqdvmZIgA3N2Y1"
+
 # ─── PLANS ────────────────────────────────────────────────────────────────────
 PLANS = {
     "7days":    {"label": "⚡ 7-Day Access",    "price": "$8 / ₹499",  "days": 7},
@@ -182,6 +185,11 @@ def method_detail_keyboard(plan_key, extra_buttons=None):
     buttons.append([InlineKeyboardButton("🔙 Back to Payment Methods", callback_data=f"backpay_{plan_key}")])
     return InlineKeyboardMarkup(buttons)
 
+def donate_method_detail_keyboard(extra_buttons=None):
+    buttons = list(extra_buttons or [])
+    buttons.append([InlineKeyboardButton("🔙 Back to Donate", callback_data="donate_back")])
+    return InlineKeyboardMarkup(buttons)
+
 def admin_approval_keyboard(user_id, plan_key):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user_id}_{plan_key}"),
@@ -217,25 +225,15 @@ def donate_keyboard():
 # ─── WELCOME TEXT ─────────────────────────────────────────────────────────────
 def welcome_text(name: str, member_count: int) -> str:
     deadline = (now_utc() + timedelta(hours=24)).strftime("%d %b, %H:%M UTC")
-
     return (
-        f"🌟 Your Exclusive Content Awaits! 🌟\n\n"
         f"👋 Welcome, <b>{name}</b>!\n\n"
         f"🔥 Join <b>{member_count:,}+ members</b> already inside — rated <b>{RATING}</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "Welcome to @BadMegaVlP_bot! Since you're already here, we'll get straight to the good part. 😏\n\n"
-        "Inside our VIP collection you'll find:\n\n"
-        "✅ Exclusive premium content\n"
-        "✅ Dedicated categories with easy navigation\n"
-        "✅ GBs of content across all niches\n"
-        "✅ Thousands of collections already available\n\n"
-        "Press 👉🏻 Preview for a sneak peek 👀\n\n"
         "🚨 <b>LIMITED TIME OFFER</b>\n"
         f"⏰ Price increases after: <b>{deadline}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🔓 Access what you deserve.\n"
-        "See you inside! 👍\n"
-        "<i>BADMEGA VIP</i>"
+        "📦 <b>Choose a plan to get started:</b>\n"
+        "<i>Prices shown in USD & INR</i>"
     )
 
 # ─── /start ───────────────────────────────────────────────────────────────────
@@ -272,7 +270,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Could not delete message on back_plans: {e}")
         return
 
-    # ── Donate hub
+    # ── Donate hub — send new message
     if data == "donate":
         text = (
             "💝 <b>Support This Bot</b>\n\n"
@@ -293,7 +291,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(text, reply_markup=donate_keyboard(), parse_mode="HTML")
         return
 
-    # ── Donate method
+    # ── Back to donate hub — edit in place
+    if data == "donate_back":
+        text = (
+            "💝 <b>Support This Bot</b>\n\n"
+            "This bot runs on passion and your generosity.\n"
+            "Every donation — big or small — keeps the servers alive,\n"
+            "the content fresh, and the community growing. 🙏\n\n"
+            "<i>Just pay what feels right.</i>\n\n"
+            "👇 Choose your donation method:"
+        )
+        try:
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=DONATE_IMAGE, caption=text, parse_mode="HTML"),
+                reply_markup=donate_keyboard(),
+            )
+        except Exception as e:
+            logger.warning(f"edit_message_media failed for donate_back: {e}")
+            try:
+                await query.message.reply_photo(photo=DONATE_IMAGE, caption=text, reply_markup=donate_keyboard(), parse_mode="HTML")
+            except:
+                await query.message.reply_text(text, reply_markup=donate_keyboard(), parse_mode="HTML")
+        return
+
+    # ── Donate method — edit in place
     if data.startswith("donate_"):
         method_key = data[7:]
         method = DONATE_METHODS.get(method_key)
@@ -306,14 +327,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\n\nThank you for keeping this community alive! 🌟\n"
             "<i>After donating, no action needed — just enjoy!</i>"
         )
-        extra_buttons = method.get("extra_buttons", [])
-        kb = InlineKeyboardMarkup(
-            list(extra_buttons) + [[InlineKeyboardButton("🔙 Back to Donate", callback_data="donate")]]
-        )
+        kb = donate_method_detail_keyboard(method.get("extra_buttons", []))
         try:
-            await query.message.reply_photo(photo=method["image"], caption=text, reply_markup=kb, parse_mode="HTML")
-        except:
-            await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=method["image"], caption=text, parse_mode="HTML"),
+                reply_markup=kb,
+            )
+        except Exception as e:
+            logger.warning(f"edit_message_media failed for donate method: {e}")
+            try:
+                await query.message.reply_photo(photo=method["image"], caption=text, reply_markup=kb, parse_mode="HTML")
+            except:
+                await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
     # ── Plan selected → send NEW message with payment methods
@@ -397,25 +422,75 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
-    # ── Admin: Approve
+    # ── Admin: Approve — auto-sends fixed invite link, no prompt needed
     if data.startswith("approve_"):
         if user.id != ADMIN_ID:
             await query.answer("❌ Not authorized.", show_alert=True)
             return
         _, uid, plan_key = data.split("_", 2)
         uid = int(uid)
-        admin_state["approving"] = uid
-        admin_state["plan_key"]  = plan_key
-        await query.message.reply_text(
-            f"🔗 <b>Send the invite link for user <code>{uid}</code></b>\n\n"
-            f"Plan: <b>{PLANS[plan_key]['label']}</b>\n\n"
-            "Paste the unique channel invite link now:",
-            parse_mode="HTML"
-        )
+
+        expiry = get_expiry(plan_key)
+        db_upsert_user(uid, {
+            "active":     True,
+            "plan":       plan_key,
+            "expires_at": expiry.isoformat() if expiry else None,
+        })
+        db_delete_pending(uid)
+
+        plan       = PLANS[plan_key]
+        expiry_txt = expiry.strftime("%d %b %Y") if expiry else "Lifetime ♾️"
+
         try:
-            await query.edit_message_caption(caption="⏳ Waiting for invite link from admin...", parse_mode="HTML")
+            await context.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"✅ <b>Payment Approved!</b>\n\n"
+                    f"🎉 Welcome to the premium channel!\n\n"
+                    f"📦 Plan: <b>{plan['label']}</b>\n"
+                    f"💰 Amount: <b>{plan['price']}</b>\n"
+                    f"📅 Expires: <b>{expiry_txt}</b>\n\n"
+                    f"🔗 <b>Your join link:</b>\n{INVITE_LINK}\n\n"
+                    "👆 Tap the link above to join now!"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Approval notify error: {e}")
+
+        if plan_key != "lifetime":
+            async def send_upsell():
+                await asyncio.sleep(4)
+                savings = "Save ₹400+ vs renewing monthly!" if plan_key == "7days" else "Pay once, keep access forever!"
+                try:
+                    await context.bot.send_message(
+                        chat_id=uid,
+                        text=(
+                            f"💡 <b>Special offer for new members!</b>\n\n"
+                            f"Upgrade to <b>Lifetime Access</b> for just <b>{PLANS['lifetime']['price']}</b>\n"
+                            f"✨ {savings}\n\n"
+                            "No renewals. No expiry. Pay once — stay forever.\n\n"
+                            "👇 Tap below to upgrade:"
+                        ),
+                        reply_markup=upsell_keyboard(),
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.error(f"Upsell error: {e}")
+            asyncio.create_task(send_upsell())
+
+        try:
+            await query.edit_message_caption(
+                caption=f"✅ Approved — {plan['label']} — User <code>{uid}</code>",
+                parse_mode="HTML"
+            )
         except:
             pass
+
+        await query.message.reply_text(
+            f"✅ Approved user <code>{uid}</code> — {plan['label']}\nInvite link auto-sent.",
+            parse_mode="HTML"
+        )
         return
 
     # ── Admin: Reject
@@ -489,71 +564,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text or ""
-
-    # ── Waiting for invite link
-    if "approving" in admin_state:
-        uid        = admin_state.pop("approving")
-        plan_key   = admin_state.pop("plan_key", None)
-        invite_url = text.strip()
-
-        if not invite_url.startswith("http"):
-            await update.message.reply_text("⚠️ That doesn't look like a valid link. Try again.")
-            return
-
-        expiry = get_expiry(plan_key)
-        db_upsert_user(uid, {
-            "active":     True,
-            "plan":       plan_key,
-            "expires_at": expiry.isoformat() if expiry else None,
-        })
-        db_delete_pending(uid)
-
-        plan       = PLANS[plan_key]
-        expiry_txt = expiry.strftime("%d %b %Y") if expiry else "Lifetime ♾️"
-
-        try:
-            await context.bot.send_message(
-                chat_id=uid,
-                text=(
-                    f"✅ <b>Payment Approved!</b>\n\n"
-                    f"🎉 Welcome to the premium channel!\n\n"
-                    f"📦 Plan: <b>{plan['label']}</b>\n"
-                    f"💰 Amount: <b>{plan['price']}</b>\n"
-                    f"📅 Expires: <b>{expiry_txt}</b>\n\n"
-                    f"🔗 <b>Your unique join link:</b>\n{invite_url}\n\n"
-                    "⚠️ This is a one-time link. Join immediately!"
-                ),
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logger.error(f"Approval notify error: {e}")
-
-        if plan_key != "lifetime":
-            async def send_upsell():
-                await asyncio.sleep(4)
-                savings = "Save ₹400+ vs renewing monthly!" if plan_key == "7days" else "Pay once, keep access forever!"
-                try:
-                    await context.bot.send_message(
-                        chat_id=uid,
-                        text=(
-                            f"💡 <b>Special offer for new members!</b>\n\n"
-                            f"Upgrade to <b>Lifetime Access</b> for just <b>{PLANS['lifetime']['price']}</b>\n"
-                            f"✨ {savings}\n\n"
-                            "No renewals. No expiry. Pay once — stay forever.\n\n"
-                            "👇 Tap below to upgrade:"
-                        ),
-                        reply_markup=upsell_keyboard(),
-                        parse_mode="HTML"
-                    )
-                except Exception as e:
-                    logger.error(f"Upsell error: {e}")
-            asyncio.create_task(send_upsell())
-
-        await update.message.reply_text(
-            f"✅ Approved user <code>{uid}</code> — {plan['label']}\nInvite link sent.",
-            parse_mode="HTML"
-        )
-        return
 
     # ── Waiting for rejection reason
     if "rejecting" in admin_state:
