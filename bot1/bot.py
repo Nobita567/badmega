@@ -31,11 +31,16 @@ supabase: Client = create_client(SUPA_URL, SUPA_KEY)
 # ─── FIXED INVITE LINK ────────────────────────────────────────────────────────
 INVITE_LINK = "https://t.me/addlist/6sPqdvmZIgA3N2Y1"
 
+# ─── IMAGES ───────────────────────────────────────────────────────────────────
+WELCOME_IMAGE      = "https://graph.org/file/95aa04ea6bacf4ace8816-ec4e9510ee1a94e33c.jpg"
+PAYMENT_MAIN_IMAGE = "https://graph.org/file/bda4c8741cef3354d467f-2d3c7faabd36813f12.jpg"
+DONATE_IMAGE       = "https://graph.org/file/d0108817594a1b51532a4-396122f7b54970bd86.jpg"
+
 # ─── PLANS ────────────────────────────────────────────────────────────────────
 PLANS = {
-    "7days":    {"label": "⚡ 7-Day Access",    "price": "$8 / ₹499",  "days": 7},
-    "1month":   {"label": "🔥 1-Month Access",  "price": "$10 / ₹699", "days": 30},
-    "lifetime": {"label": "👑 Lifetime Access", "price": "$12 / ₹899", "days": None},
+    "7days":    {"label": "⚡ 7-Day Access",    "price": "$8 / ₹499",  "days": 7,  "inr": 499,  "usd": 8},
+    "1month":   {"label": "🔥 1-Month Access",  "price": "$10 / ₹699", "days": 30, "inr": 699,  "usd": 10},
+    "lifetime": {"label": "👑 Lifetime Access", "price": "$12 / ₹899", "days": None,"inr": 899, "usd": 12},
 }
 
 # ─── PAYMENT METHODS ──────────────────────────────────────────────────────────
@@ -101,12 +106,9 @@ PAYMENT_METHODS = {
     },
 }
 
-PAYMENT_MAIN_IMAGE = "https://graph.org/file/bda4c8741cef3354d467f-2d3c7faabd36813f12.jpg"
-DONATE_IMAGE       = "https://graph.org/file/d0108817594a1b51532a4-396122f7b54970bd86.jpg"
 DONATE_METHODS     = PAYMENT_METHODS
-
-RATING            = "4.9★"
-BASE_MEMBER_COUNT = 200
+RATING             = "4.9★"
+BASE_MEMBER_COUNT  = 200
 
 # ─── SUPABASE HELPERS ─────────────────────────────────────────────────────────
 def now_utc():
@@ -249,11 +251,126 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "joined_at":  now_utc().isoformat(),
         })
     member_count = db_total_users()
-    await update.message.reply_text(
-        welcome_text(user.first_name, member_count),
-        reply_markup=plans_keyboard(),
-        parse_mode="HTML"
-    )
+    # Send welcome image (protect_content=True makes it unforwardable)
+    try:
+        await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=WELCOME_IMAGE,
+            caption=welcome_text(user.first_name, member_count),
+            reply_markup=plans_keyboard(),
+            parse_mode="HTML",
+            protect_content=True,
+        )
+    except Exception as e:
+        logger.warning(f"Welcome photo failed, falling back to text: {e}")
+        await update.message.reply_text(
+            welcome_text(user.first_name, member_count),
+            reply_markup=plans_keyboard(),
+            parse_mode="HTML"
+        )
+
+# ─── /stats ───────────────────────────────────────────────────────────────────
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Not authorized.")
+        return
+
+    await update.message.reply_text("⏳ Fetching stats...")
+
+    try:
+        # All subscribers
+        all_users_r  = supabase.table("subscribers").select("*").execute()
+        all_users    = all_users_r.data or []
+
+        # Active subscribers
+        active_users = [u for u in all_users if u.get("active")]
+
+        # Pending payments
+        pending_r    = supabase.table("pending_payments").select("*").execute()
+        pending      = pending_r.data or []
+
+        # Totals
+        total_users   = max(len(all_users), BASE_MEMBER_COUNT)
+        total_active  = len(active_users)
+        total_inactive = len(all_users) - total_active
+        total_pending = len(pending)
+
+        # Per-plan breakdown of active subscribers
+        plan_counts = {"7days": 0, "1month": 0, "lifetime": 0, "other": 0}
+        for u in active_users:
+            pk = u.get("plan") or "other"
+            if pk in plan_counts:
+                plan_counts[pk] += 1
+            else:
+                plan_counts["other"] += 1
+
+        # Estimated earnings (INR & USD) from active subscribers by plan
+        est_inr = sum(
+            plan_counts.get(pk, 0) * PLANS[pk]["inr"]
+            for pk in ("7days", "1month", "lifetime")
+        )
+        est_usd = sum(
+            plan_counts.get(pk, 0) * PLANS[pk]["usd"]
+            for pk in ("7days", "1month", "lifetime")
+        )
+
+        # Expiring within 24 hours
+        now = now_utc()
+        expiring_soon = 0
+        for u in active_users:
+            exp = u.get("expires_at")
+            if not exp:
+                continue
+            try:
+                dt = datetime.fromisoformat(exp)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if now <= dt <= now + timedelta(hours=24):
+                    expiring_soon += 1
+            except:
+                pass
+
+        # Newest 3 subscribers
+        newest = sorted(
+            [u for u in all_users if u.get("joined_at")],
+            key=lambda u: u["joined_at"], reverse=True
+        )[:3]
+        newest_lines = ""
+        for u in newest:
+            name = u.get("username") or u.get("first_name") or str(u["user_id"])
+            newest_lines += f"  • @{name} — {u.get('plan') or 'no plan'}\n"
+
+        text = (
+            "📊 <b>Bot Statistics</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+            "👥 <b>Users</b>\n"
+            f"  Total registered : <b>{total_users:,}</b>\n"
+            f"  Active (paid)    : <b>{total_active:,}</b>\n"
+            f"  Inactive         : <b>{total_inactive:,}</b>\n"
+            f"  Pending payment  : <b>{total_pending:,}</b>\n"
+            f"  Expiring in 24h  : <b>{expiring_soon:,}</b>\n\n"
+
+            "📦 <b>Active — Plan Breakdown</b>\n"
+            f"  ⚡ 7-Day     : <b>{plan_counts['7days']:,}</b>\n"
+            f"  🔥 1-Month   : <b>{plan_counts['1month']:,}</b>\n"
+            f"  👑 Lifetime  : <b>{plan_counts['lifetime']:,}</b>\n\n"
+
+            "💰 <b>Estimated Earnings (active subs)</b>\n"
+            f"  INR : <b>₹{est_inr:,}</b>\n"
+            f"  USD : <b>${est_usd:,}</b>\n\n"
+
+            "🆕 <b>Latest Subscribers</b>\n"
+            f"{newest_lines}"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>🕐 {now.strftime('%d %b %Y %H:%M UTC')}</i>"
+        )
+
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Stats error: {e}")
+        await update.message.reply_text(f"❌ Error fetching stats: {e}")
 
 # ─── BUTTON HANDLER ───────────────────────────────────────────────────────────
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -355,7 +472,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Price: <b>{plan['price']}</b>\n\n"
             "💳 <b>Choose your payment method:</b>"
         )
-        # Send a brand-new message — do NOT edit the plans message
         try:
             await query.message.reply_photo(
                 photo=PAYMENT_MAIN_IMAGE,
@@ -408,7 +524,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ) + body
 
         kb = method_detail_keyboard(plan_key, method.get("extra_buttons", []))
-        # Edit in place — swap image and caption
         try:
             await query.edit_message_media(
                 media=InputMediaPhoto(media=method["image"], caption=text, parse_mode="HTML"),
@@ -422,7 +537,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
-    # ── Admin: Approve — auto-sends fixed invite link, no prompt needed
+    # ── Admin: Approve — auto-sends fixed invite link
     if data.startswith("approve_"):
         if user.id != ADMIN_ID:
             await query.answer("❌ Not authorized.", show_alert=True)
@@ -761,6 +876,7 @@ def main():
     app.add_handler(CommandHandler("start",      start))
     app.add_handler(CommandHandler("broadcast",  broadcast))
     app.add_handler(CommandHandler("dbroadcast", dbroadcast))
+    app.add_handler(CommandHandler("stats",      stats))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     app.add_handler(MessageHandler(
