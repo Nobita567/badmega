@@ -725,10 +725,18 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
         InlineKeyboardButton(btn_text, url=f"https://t.me/{main_bot_username}?start=start")
     ]])
 
+    user_ids   = db_all_user_ids()
+    status_msg = await update.message.reply_text(f"📤 Sending to {len(user_ids)} users...")
+
+    # Fire-and-forget: hand the send loop off to a background task so this
+    # handler returns immediately and the bot keeps handling everything else.
+    asyncio.create_task(_run_dbroadcast(context, file_id, kb, status_msg))
+
+
+async def _run_dbroadcast(context: ContextTypes.DEFAULT_TYPE, file_id, kb, status_msg):
     user_ids  = db_all_user_ids()
     sent_msgs = []
     sent = failed = blocked = 0
-    status_msg = await update.message.reply_text(f"📤 Sending to {len(user_ids)} users...")
 
     for uid in user_ids:
         try:
@@ -747,10 +755,13 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 failed += 1
         await asyncio.sleep(0.05)
 
-    await status_msg.edit_text(
-        f"📢 D-Broadcast done!\n✅ Sent: {sent}\n🚫 Blocked/removed: {blocked}\n❌ Failed: {failed}\n"
-        f"⏰ Auto-deletes in 30 min."
-    )
+    try:
+        await status_msg.edit_text(
+            f"📢 D-Broadcast done!\n✅ Sent: {sent}\n🚫 Blocked/removed: {blocked}\n❌ Failed: {failed}\n"
+            f"⏰ Auto-deletes in 30 min."
+        )
+    except TelegramError as e:
+        logger.warning(f"Could not edit d-broadcast status message: {e}")
 
     async def delete_all():
         await asyncio.sleep(30 * 60)
@@ -762,18 +773,10 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
     asyncio.create_task(delete_all())
 
 # ─── /broadcast ───────────────────────────────────────────────────────────────
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Not authorized.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /broadcast Your message here")
-        return
-
-    text       = " ".join(context.args)
-    user_ids   = db_all_user_ids()
+async def _run_broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, status_msg):
+    """Actual send loop, run as a background task so it never blocks other handlers."""
+    user_ids = db_all_user_ids()
     sent = failed = blocked = 0
-    status_msg = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users...")
 
     for uid in user_ids:
         try:
@@ -788,9 +791,29 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 failed += 1
         await asyncio.sleep(0.05)
 
-    await status_msg.edit_text(
-        f"📢 Broadcast done!\n✅ Sent: {sent}\n🚫 Blocked/removed from DB: {blocked}\n❌ Failed: {failed}"
-    )
+    try:
+        await status_msg.edit_text(
+            f"📢 Broadcast done!\n✅ Sent: {sent}\n🚫 Blocked/removed from DB: {blocked}\n❌ Failed: {failed}"
+        )
+    except TelegramError as e:
+        logger.warning(f"Could not edit broadcast status message: {e}")
+
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Not authorized.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast Your message here")
+        return
+
+    text        = " ".join(context.args)
+    user_ids    = db_all_user_ids()
+    status_msg  = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users...")
+
+    # Fire-and-forget: the handler returns immediately, so the bot keeps
+    # responding to every other command/button/message while this runs.
+    asyncio.create_task(_run_broadcast(context, text, status_msg))
 
 # ─── /dbroadcast ──────────────────────────────────────────────────────────────
 async def dbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -871,7 +894,7 @@ async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start",      start))
     app.add_handler(CommandHandler("broadcast",  broadcast))
