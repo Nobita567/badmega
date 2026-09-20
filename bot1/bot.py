@@ -9,7 +9,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes,
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, RetryAfter
 from supabase import create_client, Client
 
 logging.basicConfig(
@@ -157,6 +157,21 @@ def get_expiry(plan_key):
 
 # ─── ADMIN STATE ──────────────────────────────────────────────────────────────
 admin_state: dict = {}
+
+# Keep a reference to every background task so Python can't silently
+# garbage-collect (kill) a long-running broadcast half way.
+bg_tasks: set = set()
+
+def spawn(coro):
+    task = asyncio.create_task(coro)
+    bg_tasks.add(task)
+    task.add_done_callback(bg_tasks.discard)
+    return task
+
+def retry_seconds(e: RetryAfter) -> float:
+    """Flood-wait time in seconds (works whether PTB gives an int or a timedelta)."""
+    ra = e.retry_after
+    return ra.total_seconds() if hasattr(ra, "total_seconds") else float(ra)
 
 # ─── KEYBOARDS ────────────────────────────────────────────────────────────────
 def plans_keyboard():
@@ -592,7 +607,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception as e:
                     logger.error(f"Upsell error: {e}")
-            asyncio.create_task(send_upsell())
+            spawn(send_upsell())
 
         try:
             await query.edit_message_caption(
@@ -725,34 +740,42 @@ async def handle_admin_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
         InlineKeyboardButton(btn_text, url=f"https://t.me/{main_bot_username}?start=start")
     ]])
 
-    user_ids   = db_all_user_ids()
+    user_ids   = await asyncio.to_thread(db_all_user_ids)
     status_msg = await update.message.reply_text(f"📤 Sending to {len(user_ids)} users...")
 
     # Fire-and-forget: hand the send loop off to a background task so this
     # handler returns immediately and the bot keeps handling everything else.
-    asyncio.create_task(_run_dbroadcast(context, file_id, kb, status_msg))
+    spawn(_run_dbroadcast(context, file_id, kb, status_msg, user_ids))
 
 
-async def _run_dbroadcast(context: ContextTypes.DEFAULT_TYPE, file_id, kb, status_msg):
-    user_ids  = db_all_user_ids()
+async def _run_dbroadcast(context: ContextTypes.DEFAULT_TYPE, file_id, kb, status_msg, user_ids):
     sent_msgs = []
     sent = failed = blocked = 0
 
     for uid in user_ids:
-        try:
-            msg = await context.bot.send_video(
-                chat_id=uid, video=file_id,
-                reply_markup=kb, parse_mode="HTML"
-            )
-            sent_msgs.append((uid, msg.message_id))
-            sent += 1
-        except TelegramError as e:
-            err = str(e).lower()
-            if "blocked" in err or "deactivated" in err or "not found" in err or "forbidden" in err:
-                db_delete_user(uid)
-                blocked += 1
-            else:
-                failed += 1
+        for attempt in range(2):  # 2nd attempt only after a flood-wait
+            try:
+                msg = await context.bot.send_video(
+                    chat_id=uid, video=file_id,
+                    reply_markup=kb, parse_mode="HTML"
+                )
+                sent_msgs.append((uid, msg.message_id))
+                sent += 1
+                break
+            except RetryAfter as e:
+                logger.warning(f"Flood wait: sleeping {retry_seconds(e)}s")
+                await asyncio.sleep(retry_seconds(e) + 1)
+                if attempt == 1:
+                    failed += 1
+            except TelegramError as e:
+                err = str(e).lower()
+                if "blocked" in err or "deactivated" in err or "not found" in err or "forbidden" in err:
+                    # run the DB call in a thread so it doesn't freeze the bot
+                    await asyncio.to_thread(db_delete_user, uid)
+                    blocked += 1
+                else:
+                    failed += 1
+                break
         await asyncio.sleep(0.05)
 
     try:
@@ -768,27 +791,38 @@ async def _run_dbroadcast(context: ContextTypes.DEFAULT_TYPE, file_id, kb, statu
         for chat_id, message_id in sent_msgs:
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except:
+            except RetryAfter as e:
+                await asyncio.sleep(retry_seconds(e) + 1)
+            except Exception:
                 pass
-    asyncio.create_task(delete_all())
+            await asyncio.sleep(0.05)
+    spawn(delete_all())
 
 # ─── /broadcast ───────────────────────────────────────────────────────────────
-async def _run_broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, status_msg):
+async def _run_broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, status_msg, user_ids):
     """Actual send loop, run as a background task so it never blocks other handlers."""
-    user_ids = db_all_user_ids()
     sent = failed = blocked = 0
 
     for uid in user_ids:
-        try:
-            await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
-            sent += 1
-        except TelegramError as e:
-            err = str(e).lower()
-            if "blocked" in err or "deactivated" in err or "not found" in err or "forbidden" in err:
-                db_delete_user(uid)
-                blocked += 1
-            else:
-                failed += 1
+        for attempt in range(2):  # 2nd attempt only after a flood-wait
+            try:
+                await context.bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+                sent += 1
+                break
+            except RetryAfter as e:
+                logger.warning(f"Flood wait: sleeping {retry_seconds(e)}s")
+                await asyncio.sleep(retry_seconds(e) + 1)
+                if attempt == 1:
+                    failed += 1
+            except TelegramError as e:
+                err = str(e).lower()
+                if "blocked" in err or "deactivated" in err or "not found" in err or "forbidden" in err:
+                    # run the DB call in a thread so it doesn't freeze the bot
+                    await asyncio.to_thread(db_delete_user, uid)
+                    blocked += 1
+                else:
+                    failed += 1
+                break
         await asyncio.sleep(0.05)
 
     try:
@@ -808,12 +842,12 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text        = " ".join(context.args)
-    user_ids    = db_all_user_ids()
+    user_ids    = await asyncio.to_thread(db_all_user_ids)
     status_msg  = await update.message.reply_text(f"📤 Broadcasting to {len(user_ids)} users...")
 
     # Fire-and-forget: the handler returns immediately, so the bot keeps
     # responding to every other command/button/message while this runs.
-    asyncio.create_task(_run_broadcast(context, text, status_msg))
+    spawn(_run_broadcast(context, text, status_msg, user_ids))
 
 # ─── /dbroadcast ──────────────────────────────────────────────────────────────
 async def dbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -830,7 +864,7 @@ async def dbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── EXPIRY CHECKER ───────────────────────────────────────────────────────────
 async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
     now          = now_utc()
-    active_users = db_all_active()
+    active_users = await asyncio.to_thread(db_all_active)
 
     for row in active_users:
         uid        = row["user_id"]
@@ -865,7 +899,7 @@ async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=renew_keyboard(),
                     parse_mode="HTML"
                 )
-                db_upsert_user(uid, {"active": False, "plan": None, "expires_at": None})
+                await asyncio.to_thread(db_upsert_user, uid, {"active": False, "plan": None, "expires_at": None})
                 logger.info(f"Processed expired user {uid}")
             except TelegramError as e:
                 logger.error(f"Expiry handler error for {uid}: {e}")
@@ -903,7 +937,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
 
     app.add_handler(MessageHandler(
-        filters.PHOTO | filters.Document.IMAGE & ~filters.User(ADMIN_ID),
+        (filters.PHOTO | filters.Document.IMAGE) & ~filters.User(ADMIN_ID),
         handle_screenshot
     ))
     app.add_handler(MessageHandler(
